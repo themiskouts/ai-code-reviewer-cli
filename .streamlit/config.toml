@@ -1,0 +1,15 @@
+[theme]
+# Primary accent color for buttons and highlights
+primaryColor = "#2E86DE"
+
+# Base background color for the main page
+backgroundColor = "#FFFFFF"
+
+# Background color for sidebars and input widgets
+secondaryBackgroundColor = "#F1F2F6"
+
+# Text color for headings and paragraphs
+textColor = "#2F3640"
+
+# Font family ("sans serif", "serif", or "monospace")
+font = "sans serif"
