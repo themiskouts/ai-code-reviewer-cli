@@ -12,34 +12,62 @@ client=genai.Client()
 # Configure the Gemini client
 #GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 #genai.configure(api_key=GEMINI_API_KEY)
-
-def review_and_categorize_code(code_content: str):
-    """Sends code to Gemini for analysis and extracts a specific category."""
+def review_and_categorize_code(code_content: str) -> str:
+    """Sends code or questions to Gemini and returns the AI response text, handling rate limits gracefully."""
+    client = genai.Client()
     
-    prompt = f"""
-    You are an expert code reviewer and technical tutor.
-    Analyze the following code snippet and perform two tasks:
+    existing_categories = get_existing_categories()
+    
+    if existing_categories:
+        categories_str = ", ".join([f"'{c}'" for c in existing_categories])
+        category_instruction = (
+            f"EXISTING CATEGORIES IN DATABASE: [{categories_str}]\n"
+            "CRITICAL RULE: If the code snippet fits into ANY of the existing categories listed above "
+            "(even if the concept or language varies slightly), you MUST output that EXACT string token for token.\n"
+            "Only if it does NOT fit any existing category, create a new high-level general category name (1 to 3 words max)."
+        )
+    else:
+        category_instruction = (
+            "Create a single high-level general category name for this code (1 to 3 words max, e.g., 'Fibonacci', 'SQL Query', 'Prime Numbers')."
+        )
 
-    1. CATEGORY: Provide a single, highly specific classification tag describing the core algorithm, concept, or feature implemented in the code.
-       - Good examples: "Dijkstra's Algorithm", "Prime Number Checking", "SQL Table Creation", "Binary Search Tree", "C File I/O".
-       - Bad examples: "Math", "Algorithms", "C++", "Data Structures", "Loops".
-       - Format this line EXACTLY as: CATEGORY: <Your Specific Category>
-
-    2. REVIEW: Provide a brief, constructive code review highlighting performance, edge cases, readability, and potential bugs.
-
-    Here is the code to review:
-    ```
-    {code_content}
-    ```
-    """
-
-    # Query Gemini
-    response = client.models.generate_content(
-        model="gemini-3.5-flash",
-        contents=prompt
+    prompt = (
+        "First, determine if the provided input is a CODE SNIPPET or a PROGRAMMING QUESTION.\n\n"
+        "--- IF IT IS A CODE SNIPPET ---\n"
+        "1. CATEGORY CLASSIFICATION:\n"
+        f"{category_instruction}\n"
+        "Format this line EXACTLY as: CATEGORY: <Chosen Category Name>\n"
+        "2. CODE REVIEW:\n"
+        "Provide a brief, constructive review covering performance, edge cases, and potential bugs.\n\n"
+        "--- IF IT IS A PROGRAMMING QUESTION ---\n"
+        "1. Format this line EXACTLY as: CATEGORY: NONE\n"
+        "2. ANSWER:\n"
+        "Provide a clear, accurate, and concise answer to the programming question."
     )
-    return response.text
 
+    config = types.GenerateContentConfig(
+        system_instruction=(
+            "You are a specialized AI programming assistant. Your job is to analyze source code (review, debug, optimize) "
+            "AND answer technical programming or software engineering questions.\n\n"
+            "CRITICAL GUARDRAIL: If the provided input is off-topic, a casual greeting (like 'hello'), or completely unrelated to coding/programming, "
+            "you MUST reply with exactly: 'I can only answer programming questions or analyze code.'"
+        )
+    )
+
+    try:
+        response = client.models.generate_content(
+            model="gemini-3.5-flash",
+            contents=f"{prompt}\n\nUser Input:\n{code_content}",
+            config=config
+        )
+        return response.text
+    except APIError as e:
+        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e) or "quota" in str(e).lower():
+            return "⚠️ **Reload API Key**: You have exceeded your free tier quota limit. Please wait a minute for the rate limit to reset, or check your API billing details."
+        else:
+            return f"⚠️ **API Error**: {e}"
+    except Exception as e:
+        return f"⚠️ **Unexpected Error**: {e}"
 def extract_category(review_text: str) -> str:
     """Extracts the category tag from Gemini's output, handling markdown formatting."""
     for line in review_text.splitlines():
@@ -91,25 +119,7 @@ def main():
     print("\nAnalyzing code with Gemini...")
 
     client = genai.Client()
-    prompt = (
-        "Analyze the provided source code snippet and perform two tasks:\n\n"
-        "1. CATEGORY CLASSIFICATION:\n"
-        "   - Identify the single core concept, underlying algorithm, domain, or primary subject of the code.\n"
-        "   - Abstraction Rule: Do NOT include implementation details, data structures used, or specific method names (e.g., prefer 'Fibonacci' over 'Recursive Fibonacci Sequence Calculation', 'SQL Queries' over 'SQL Inner Join', 'Prime Numbers' over 'Trial Division Prime Check').\n"
-        "   - Generalization Rule: Produce a general, high-level category name consisting of 1 to 3 words maximum. Capitalize each word cleanly.\n"
-        "   - Format this line EXACTLY as: CATEGORY: <General Category Name>\n\n"
-        "2. CODE REVIEW:\n"
-        "   - Provide a brief, constructive review covering performance, edge cases, and potential bugs."
-    )
-    config = types.GenerateContentConfig(
-        system_instruction=(
-            "You are a strict code review assistant. Your ONLY job is to analyze source code "
-            "(such as Python, C, JavaScript, etc.). "
-            "If the provided input is plain text, a general question, or anything that is not actual source code, "
-            "you MUST reply with exactly: 'I can only answer about analyzing code.' "
-            "Do not answer any other queries or perform general chat tasks."
-        )
-    )
+    
     existing_categories = get_existing_categories()
     
     if existing_categories:
@@ -125,23 +135,26 @@ def main():
             "Create a single high-level general category name for this code (1 to 3 words max, e.g., 'Fibonacci', 'SQL Query', 'Prime Numbers')."
         )
     prompt = (
-        "Analyze the provided source code snippet and perform two tasks:\n\n"
+        "First, determine if the provided input is a CODE SNIPPET or a PROGRAMMING QUESTION.\n\n"
+        "--- IF IT IS A CODE SNIPPET ---\n"
         "1. CATEGORY CLASSIFICATION:\n"
         f"{category_instruction}\n"
-        "Format this line EXACTLY as: CATEGORY: <Chosen Category Name>\n\n"
+        "Format this line EXACTLY as: CATEGORY: <Chosen Category Name>\n"
         "2. CODE REVIEW:\n"
-        "Provide a brief, constructive review covering performance, edge cases, and potential bugs."
+        "Provide a brief, constructive review covering performance, edge cases, and potential bugs.\n\n"
+        "--- IF IT IS A PROGRAMMING QUESTION ---\n"
+        "1. Format this line EXACTLY as: CATEGORY: NONE\n"
+        "2. ANSWER:\n"
+        "Provide a clear, accurate, and concise answer to the programming question."
     )
     config = types.GenerateContentConfig(
         system_instruction=(
-            "You are a strict code review assistant. Your ONLY job is to analyze source code "
-            "(such as Python, C, JavaScript, etc.). "
-            "If the provided input is plain text, a general question, or anything that is not actual source code, "
-            "you MUST reply with exactly: 'I can only answer about analyzing code.' "
-            "Do not answer any other queries or perform general chat tasks."
+            "You are a specialized AI programming assistant. Your job is to analyze source code (review, debug, optimize) "
+            "AND answer technical programming or software engineering questions.\n\n"
+            "CRITICAL GUARDRAIL: If the provided input is off-topic, a casual greeting (like 'hello'), or completely unrelated to coding/programming, "
+            "you MUST reply with exactly: 'I can only answer programming questions or analyze code.'"
         )
     )
-
     for attempt in range(1, 4):
         try:
             response = client.models.generate_content(

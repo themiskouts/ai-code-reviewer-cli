@@ -24,45 +24,62 @@ def get_or_create_user_id() -> str:
 
 def save_submission(code_content: str, category: str = "Uncategorized"):
     """Saves a valid code submission to Supabase."""
-    #1. Grab our unique local device ID
     user_id = get_or_create_user_id()
 
     try:
-        # 2. Insert a new row into the 'submissions' table in Supabase
-        response= supabase.table("submissions").insert({
+        # Insert the submission row
+        response = supabase.table("submissions").insert({
             "user_id": user_id,
             "code_content": code_content,
             "category": category
         }).execute()
-        existing = supabase.table("category_stats").select("*").eq("category_name", category).execute()
-        if existing.data:
-            current_count = existing.data[0]["count"]
-            supabase.table("category_stats").update({"count": current_count + 1}).eq("category_name", category).execute()
-        else:
-            supabase.table("category_stats").insert({"category_name": category, "count": 1}).execute()
+
+        # ONLY update category stats if it's a real specific category (Skip Uncategorized & NONE)
+        if category and category.upper() not in ["UNCATEGORIZED", "NONE"]:
+            existing = supabase.table("category_stats").select("*").eq("category_name", category).execute()
+            if existing.data:
+                current_count = existing.data[0]["count"]
+                supabase.table("category_stats").update({"count": current_count + 1}).eq("category_name", category).execute()
+            else:
+                supabase.table("category_stats").insert({"category_name": category, "count": 1}).execute()
+                
     except Exception as e:
         print(f"Error saving to database: {e}")
 
 def fetch_category_statistics():
     """Fetches category stats from Supabase and displays top 3 categories by popularity."""
     try:
-        response=supabase.table("category_stats").select("*").execute()
-        stats_data= response.data
+        response = supabase.table("category_stats").select("*").execute()
+        stats_data = response.data
+        
         if not stats_data:
             print("No statistics found yet. Submit some code snippets first!")
             return
-        total_submissions = sum(item["count"] for item in stats_data)
-        sorted_stats = sorted(stats_data, key=lambda x: x["count"], reverse=True)
-        top_3=sorted_stats[:3]
+
+        # Filter out Uncategorized and NONE so they stay out of sums and percentages
+        valid_stats = [
+            item for item in stats_data 
+            if item["category_name"] and item["category_name"].upper() not in ["UNCATEGORIZED", "NONE"]
+        ]
+
+        if not valid_stats:
+            print("No categorized submissions found yet!")
+            return
+
+        total_submissions = sum(item["count"] for item in valid_stats)
+        sorted_stats = sorted(valid_stats, key=lambda x: x["count"], reverse=True)
+        top_3 = sorted_stats[:3]
+
         print(f"Total Submissions Tracked: {total_submissions}\n")
         print("--- Top 3 Most Popular Categories ---")
         for rank, item in enumerate(top_3, start=1):
             category_name = item["category_name"]
             count = item["count"]
-            percentage = (count / total_submissions) * 100
+            percentage = (count / total_submissions) * 100 if total_submissions > 0 else 0
             print(f"{rank}. {category_name}")
             print(f"   - Submissions: {count}")
             print(f"   - Share: {percentage:.2f}%\n")
+            
     except Exception as e:
         print(f"Error fetching statistics: {e}")
 
@@ -71,7 +88,8 @@ def get_existing_categories() -> list[str]:
     try:
         response=supabase.table("category_stats").select("category_name").execute()
         #return a simple list of category names
-        return [row["category_name"] for row in response.data if row["category_name"] != "Uncategorized"]
+        return [row["category_name"] for row in response.data if row["category_name"] and row["category_name"].upper() not in ["UNCATEGORIZED", "NONE"]]
     except Exception as e:
         print(f"Warning: Could not fetch existing categories: {e}")
         return[]
+    
