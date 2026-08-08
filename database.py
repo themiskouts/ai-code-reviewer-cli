@@ -107,19 +107,19 @@ def get_existing_categories() -> list[str]:
         return []
 
 
-def fetch_submission_history() -> list[dict]:
+def fetch_submission_history(user_id: str = None) -> list[dict]:
     """
-    Fetches all past submissions ordered by newest first.
-    Returns a list of dicts with keys: id, code_content, category, review_text, created_at.
+    Fetches past submissions ordered by newest first, filtered by user_id if provided.
     """
     try:
-        response = (
+        query = (
             supabase.table("submissions")
-            .select("id, code_content, category, review_text, created_at")
+            .select("id, code_content, category, review_text, created_at, severity")
             .order("created_at", desc=True)
-            .execute()
         )
-        return response.data or []
+        if user_id:
+            query = query.eq("user_id", user_id)
+        return query.execute().data or []
     except Exception as e:
         print(f"Error fetching submission history: {e}")
         return []

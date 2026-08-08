@@ -138,6 +138,30 @@ def extract_severity(review_text: str) -> str:
 
     return "Clean"
 
+def ask_followup(code_content: str, review_text: str, chat_history: list[dict]) -> str:
+    """Sends a multi-turn follow-up question to Groq with full code + review context."""
+    try:
+        from groq import Groq
+        groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+        system = (
+            "You are AsterAI, a specialized code review assistant. "
+            "The user has submitted a code snippet which you have already reviewed. "
+            "Answer follow-up questions about the code clearly and concisely. "
+            "Always refer to the specific code and review provided.\n\n"
+            f"--- SUBMITTED CODE ---\n{code_content}\n\n"
+            f"--- YOUR PREVIOUS REVIEW ---\n{review_text}"
+        )
+
+        groq_response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "system", "content": system}] + chat_history,
+            max_tokens=1000,
+        )
+        return groq_response.choices[0].message.content
+    except Exception as e:
+        return f"⚠️ **Chat error**: {e}"
+
 def detect_language(review_text: str, code_content: str) -> str:
     """
     Detects programming language from AI output first,

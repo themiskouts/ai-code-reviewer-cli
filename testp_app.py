@@ -3,21 +3,26 @@ import uuid
 import base64
 import streamlit as st
 from database import save_submission, fetch_submission_history, delete_submission
-from main import extract_category, review_and_categorize_code, detect_language, extract_severity
+from main import extract_category, review_and_categorize_code, detect_language, extract_severity, ask_followup
+
+
 st.set_page_config(
     page_title="AsterAI - Code Analyzing",
     page_icon="logo.png",
     layout="centered",
 )
-
-
 # ── Session state bootstrap ──────────────────────────────────────────────────
 
-if "web_user_id" not in st.session_state:
-    st.session_state["web_user_id"] = str(uuid.uuid4())
+params = st.query_params
+if "uid" not in params:
+    new_uid = str(uuid.uuid4())
+    st.query_params["uid"] = new_uid
+    st.session_state["web_user_id"] = new_uid
+else:
+    st.session_state["web_user_id"] = params["uid"]
 
 if "code_input_area" not in st.session_state:
-    st.session_state["code_input_area"] = ""
+    st.session_state["code_input_area_reset"] = True
 
 if "past_review_display" not in st.session_state:
     st.session_state["past_review_display"] = None
@@ -27,6 +32,24 @@ if "show_stats" not in st.session_state:
 
 if "history_cache" not in st.session_state:
     st.session_state["history_cache"] = None
+
+if "last_review" not in st.session_state:
+    st.session_state["last_review"] = None
+
+if "show_chat" not in st.session_state:
+    st.session_state["show_chat"] = False
+
+if "chat_history" not in st.session_state:
+    st.session_state["chat_history"] = []
+
+if "chat_code" not in st.session_state:
+    st.session_state["chat_code"] = ""
+
+if "chat_review" not in st.session_state:
+    st.session_state["chat_review"] = ""
+
+if "input_reset_counter" not in st.session_state:
+    st.session_state["input_reset_counter"] = 0
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -144,7 +167,7 @@ with st.sidebar:
         search_query = st.text_input("Search history", placeholder="Filter by category or code…")
 
         if st.session_state["history_cache"] is None:
-            st.session_state["history_cache"] = fetch_submission_history()
+            st.session_state["history_cache"] = fetch_submission_history(user_id=st.session_state["web_user_id"])
         history_rows = st.session_state["history_cache"]
 
         if not history_rows:
@@ -190,9 +213,12 @@ with st.sidebar:
                     with col1:
                         if st.button("📂 Load into Editor & View Analysis", key=f"load_{row['id']}"):
                             st.session_state["code_input_area"] = code_snippet
+                            st.session_state["last_review"] = None
                             st.session_state["past_review_display"] = {
                                 "category": category,
                                 "review": review,
+                                "detected_lang": detect_language(review or "", code_snippet),
+                                "severity": row.get("severity", "Unknown"),
                             }
                             st.rerun()
                     with col2:
@@ -217,17 +243,37 @@ uploaded_file = st.file_uploader(
 code_input = st.text_area(
     "Or paste your source code here for review:",
     height=200,
-    key="code_input_area",
+    key=f"code_input_area_{st.session_state['input_reset_counter']}",
 )
 
-if st.button("Review Code"):
+col_review, col_new, col_followup = st.columns([2, 1, 1])
+with col_review:
+    review_clicked = st.button("Review Code", use_container_width=True)
+with col_new:
+    if st.session_state.get("last_review") or st.session_state.get("past_review_display"):
+        if st.button("🔄 New Submission", use_container_width=True):
+            st.session_state["last_review"] = None
+            st.session_state["past_review_display"] = None
+            st.session_state["show_chat"] = False
+            st.session_state["chat_history"] = []
+            st.session_state["chat_code"] = ""
+            st.session_state["chat_review"] = ""
+            st.session_state["input_reset_counter"] += 1
+            st.rerun()
+with col_followup:
+    if st.session_state.get("last_review") or st.session_state.get("past_review_display"):
+        if st.button("💬 Ask a Follow-up", use_container_width=True):
+            st.session_state["show_chat"] = not st.session_state["show_chat"]
+            st.rerun()
+
+if review_clicked:
     content_to_analyze = (
         uploaded_file.read().decode("utf-8") if uploaded_file is not None else code_input
     )
 
     if content_to_analyze:
-        # Clear any previously loaded historical review
         st.session_state["past_review_display"] = None
+        st.session_state["last_review"] = None
 
         status_placeholder = st.empty()
         status_placeholder.markdown("""
@@ -253,8 +299,8 @@ if st.button("Review Code"):
                     and "I can only answer" not in review_text
                 )
 
-                detected_lang = detect_language(review_text, content_to_analyze)
-                severity = extract_severity(review_text)
+                detected_lang = detect_language(review_text, content_to_analyze) if is_valid_category else None
+                severity = extract_severity(review_text) if is_valid_category else None
 
                 if is_valid_category:
                     save_submission(
@@ -264,7 +310,8 @@ if st.button("Review Code"):
                         user_id=st.session_state["web_user_id"],
                         severity=severity,
                     )
-                    st.session_state["history_cache"] = None
+                    st.session_state["chat_code"] = content_to_analyze
+                    st.session_state["chat_review"] = review_text
 
                 status_placeholder.markdown("""
                     <div style="display:flex;align-items:center;gap:10px;font-size:16px;
@@ -273,22 +320,25 @@ if st.button("Review Code"):
                     </div>
                 """, unsafe_allow_html=True)
 
-                col_cat, col_lang, col_sev = st.columns([3, 1, 1])
-                with col_cat:
+                if is_valid_category:
+                    col_cat, col_lang, col_sev = st.columns([3, 1, 1])
+                    with col_cat:
+                        st.subheader(f"Category: {category}")
+                    with col_lang:
+                        st.markdown(
+                            f"<div style='margin-top:1.6rem;'>"
+                            f"<span style='background:#2E86DE;color:white;padding:4px 10px;"
+                            f"border-radius:12px;font-size:0.8rem;font-weight:600;'>"
+                            f"🖥️ {detected_lang.upper()}</span></div>",
+                            unsafe_allow_html=True,
+                        )
+                    with col_sev:
+                        st.markdown(
+                            f"<div style='margin-top:1.6rem;'>{severity_badge(severity)}</div>",
+                            unsafe_allow_html=True,
+                        )
+                else:
                     st.subheader(f"Category: {category}")
-                with col_lang:
-                    st.markdown(
-                        f"<div style='margin-top:1.6rem;'>"
-                        f"<span style='background:#2E86DE;color:white;padding:4px 10px;"
-                        f"border-radius:12px;font-size:0.8rem;font-weight:600;'>"
-                        f"🖥️ {detected_lang.upper()}</span></div>",
-                        unsafe_allow_html=True,
-                    )
-                with col_sev:
-                    st.markdown(
-                        f"<div style='margin-top:1.6rem;'>{severity_badge(severity)}</div>",
-                        unsafe_allow_html=True,
-                    )
 
                 cleaned_review = "\n".join(
                     line for line in review_text.splitlines()
@@ -297,7 +347,16 @@ if st.button("Review Code"):
                 st.write(cleaned_review)
 
                 if is_valid_category:
+                    st.session_state["last_review"] = {
+                        "category": category,
+                        "review_text": review_text,
+                        "detected_lang": detected_lang,
+                        "severity": severity,
+                        "is_valid": True,
+                    }
+                    st.session_state["history_cache"] = None
                     st.toast(f"Saved under category '{category}' in Supabase!", icon="💾")
+                    st.rerun()
 
         except Exception as e:
             status_placeholder.empty()
@@ -306,12 +365,95 @@ if st.button("Review Code"):
         st.warning("Please upload a file or paste some code first.")
 
 
+# ── Last review result display ────────────────────────────────────────────────
+
+if st.session_state.get("last_review"):
+    r = st.session_state["last_review"]
+    if r["is_valid"]:
+        col_cat, col_lang, col_sev = st.columns([3, 1, 1])
+        with col_cat:
+            st.subheader(f"Category: {r['category']}")
+        with col_lang:
+            st.markdown(
+                f"<div style='margin-top:1.6rem;'>"
+                f"<span style='background:#2E86DE;color:white;padding:4px 10px;"
+                f"border-radius:12px;font-size:0.8rem;font-weight:600;'>"
+                f"🖥️ {r['detected_lang'].upper()}</span></div>",
+                unsafe_allow_html=True,
+            )
+        with col_sev:
+            st.markdown(
+                f"<div style='margin-top:1.6rem;'>{severity_badge(r['severity'])}</div>",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.subheader(f"Category: {r['category']}")
+
+    cleaned = "\n".join(
+        line for line in r["review_text"].splitlines()
+        if not line.strip().upper().startswith("CATEGORY:")
+    ).strip()
+    st.write(cleaned)
+
+
+
+if st.session_state.get("show_chat"):
+    st.markdown("### 💬 Follow-up Chat")
+    st.caption("Ask anything about the code or review above. AsterAI has full context.")
+
+    # Render existing chat history
+    for msg in st.session_state["chat_history"]:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+
+    # Chat input
+    user_question = st.chat_input("Ask a question about your code…")
+    if user_question:
+        # Add user message
+        st.session_state["chat_history"].append({
+            "role": "user",
+            "content": user_question,
+        })
+        with st.chat_message("user"):
+            st.write(user_question)
+
+        # Get AI response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking…"):
+                response = ask_followup(
+                    st.session_state["chat_code"],
+                    st.session_state["chat_review"],
+                    st.session_state["chat_history"],
+                )
+            st.write(response)
+
+        # Add assistant message to history
+        st.session_state["chat_history"].append({
+            "role": "assistant",
+            "content": response,
+        })
+
 # ── Historical review display (loaded from sidebar) ───────────────────────────
 
 if st.session_state.get("past_review_display"):
     data = st.session_state["past_review_display"]
     st.divider()
-    st.subheader(f"📂 Loaded Analysis — Category: {data['category']}")
+    col_cat, col_lang, col_sev = st.columns([3, 1, 1])
+    with col_cat:
+        st.subheader(f"📂 {data['category']}")
+    with col_lang:
+        st.markdown(
+            f"<div style='margin-top:1.6rem;'>"
+            f"<span style='background:#2E86DE;color:white;padding:4px 10px;"
+            f"border-radius:12px;font-size:0.8rem;font-weight:600;'>"
+            f"🖥️ {data.get('detected_lang', 'unknown').upper()}</span></div>",
+            unsafe_allow_html=True,
+        )
+    with col_sev:
+        st.markdown(
+            f"<div style='margin-top:1.6rem;'>{severity_badge(data.get('severity', 'Unknown'))}</div>",
+            unsafe_allow_html=True,
+        )
     if data["review"]:
         cleaned = "\n".join(
             line for line in data["review"].splitlines()
