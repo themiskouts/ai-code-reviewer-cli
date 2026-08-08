@@ -15,4 +15,4 @@ covering performance, edge cases, potential bugs, and severity ratings.
 Python · Streamlit · Google Gemini API · Groq API · Supabase
 
 ## Live Demo
-[Link will be added after deployment]
+(https://asterai.streamlit.app)
